@@ -29,6 +29,8 @@ last_volume = 0  # Variable to store the last volume value
 last_update_time = time.time()  # Timestamp for the last update
 volume_threshold = 5  # Define a small threshold for volume variation
 
+stop_flag = threading.Event()  # Create a threading event to signal the thread to stop
+
 def update_volume_label(volume):
     global hide_timer
     volume_label.config(text=f"Volume: {volume}%")
@@ -49,8 +51,12 @@ def hide_volume_window():
 def process_camera():
     global x1, y1, x2, y2, last_volume, last_update_time
     try:
-        while True:
-            _, image = cam.read()
+        while not stop_flag.is_set():  # Check the stop flag in the loop
+            ret, image = cam.read()
+            if not ret:
+                print("Error: Failed to read from camera.")
+                break  # Exit the loop if the camera fails
+
             frame_height, frame_width, _ = image.shape
             output = my_hands.process(image)
             hands = output.multi_hand_landmarks
@@ -78,22 +84,36 @@ def process_camera():
 
                     # Only update the volume display if the variation is within the threshold
                     if abs(volume - last_volume) <= volume_threshold:
-                        update_volume_label(volume)
+                        root.after(0, update_volume_label, volume)  # Schedule GUI update in the main thread
 
                     # Update the last volume and timestamp
                     last_volume = volume
                     last_update_time = current_time
-    except KeyboardInterrupt:
-        print("Exiting...")
+    except Exception as e:
+        print(f"Error in process_camera: {e}")
     finally:
         cam.release()
         cv2.destroyAllWindows()
+        # Signal the main thread to destroy the root window
+        stop_flag.set()
+
+# Handle KeyboardInterrupt in the main thread
+try:
+    # Run the OpenCV loop in a separate thread
+    camera_thread = threading.Thread(target=process_camera)
+    camera_thread.daemon = True
+    camera_thread.start()
+
+    # Replace root.mainloop() with a loop to allow KeyboardInterrupt handling
+    while not stop_flag.is_set():
+        root.update()  # Process Tkinter events
+        time.sleep(0.01)  # Prevent high CPU usage
+
+except KeyboardInterrupt:
+    print("Exiting...")
+    stop_flag.set()  # Signal the thread to stop
+    camera_thread.join()  # Wait for the thread to finish
+finally:
+    # Destroy the Tkinter root window in the main thread
+    if root.winfo_exists():
         root.destroy()
-
-# Run the OpenCV loop in a separate thread
-camera_thread = threading.Thread(target=process_camera)
-camera_thread.daemon = True
-camera_thread.start()
-
-# Run the Tkinter main loop in the main thread
-root.mainloop()
