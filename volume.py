@@ -30,6 +30,8 @@ last_volume = 0  # Variable to store the last volume value
 last_update_time = time.time()  # Timestamp for the last update
 volume_threshold = 5  # Define a small threshold for volume variation
 
+max_dist = 300
+
 stop_flag = threading.Event()  # Create a threading event to signal the thread to stop
 
 # Create a thread-safe queue for communication between threads
@@ -55,17 +57,18 @@ def hide_volume_window():
 
 def process_camera():
     global x1, y1, x2, y2, last_volume, last_update_time
+    distances = []  # List to store recent distances
+    max_distances = 5  # Number of distances to average
+    smoothing_factor = 0.8  # For smoothing volume changes
+
     try:
-        while not stop_flag.is_set():  # Check the stop flag in the loop
+        while not stop_flag.is_set():
             ret, image = cam.read()
             if not ret:
                 print("Error: Failed to read from camera.")
-                break  # Exit the loop if the camera fails
+                break
 
-            # Convert the image to RGB format for Mediapipe
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-            # Process the image with Mediapipe
             output = my_hands.process(image_rgb)
             hands = output.multi_hand_landmarks
 
@@ -83,21 +86,28 @@ def process_camera():
                         if id == 4:  # Thumb tip
                             x2, y2 = x, y
 
-                # Calculate the distance between the index finger tip and thumb tip
-                dist = ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
-                max_dist = 300  # Maximum distance (adjust based on your setup)
-                volume = int(min(max(dist / max_dist * 100, 0), 100))  # Clamp volume between 0 and 100
+                dist = (((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5)*3
 
-                # Check if 0.3 seconds have passed
+                # Smooth the distance using exponential smoothing
+                smoothed_dist = dist
+                if distances:
+                    smoothed_dist = 0.7 * dist + 0.3 * distances[-1]
+                distances.append(smoothed_dist)
+                if len(distances) > max_distances:
+                    distances.pop(0)
+
+                # Map the smoothed distance to volume
+                volume = min(max(smoothed_dist / max_dist * 100, 0), 100)
+
+                # Smooth volume changes
+                smoothed_volume = last_volume + (volume - last_volume) * smoothing_factor
+                volume = int(smoothed_volume)
+
+                # Update volume if conditions are met
                 current_time = time.time()
-                if (current_time - last_update_time) >= 0.3:
-                    # Update the system volume
+                if abs(volume - last_volume) >= volume_threshold and (current_time - last_update_time) >= 0.2:
                     os.system(f"pactl set-sink-volume @DEFAULT_SINK@ {volume}%")
-
-                    # Send the volume update to the main thread via the queue
                     tkinter_queue.put(("UPDATE_VOLUME", volume))
-
-                    # Update the last volume and timestamp
                     last_volume = volume
                     last_update_time = current_time
     except Exception as e:
@@ -105,7 +115,6 @@ def process_camera():
     finally:
         cam.release()
         cv2.destroyAllWindows()
-        # Signal the main thread to stop the Tkinter loop
         tkinter_queue.put(("STOP_TKINTER",))
 
 def stop_tkinter():
